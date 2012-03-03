@@ -1,0 +1,7 @@
+
+Currently I'm using InnoDB as the engine and using a compostite primary key of the timestamp column and a uuid.
+
+Can only partition on a field which is contained in the primary key in MySQL which is irksome.
+
+I may be changing this as in the testing I ran (admittedly on an underpowered box) the insert speed I was getting
+was quite poor 

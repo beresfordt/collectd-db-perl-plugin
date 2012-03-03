@@ -1,0 +1,53 @@
+
+CachingDBStore.pm - collectd perl plugin which outputs to remote DB, or caches if remote DB not available
+
+The perl module has only been tested with MySQL as the remote DB - there's nothing I can see which is MySQL 
+specific, however there's no guarantees it will work elsewhere.
+
+This was written due to a requirement for me to reliably, and centrally, store various metrics for many
+servers.  This plugin is fault tolerant; the remote DB can some and go as it pleases without causing 
+data loss.  When the remote DB does reappear after a period of absence the plugin will drain its local 
+cache in a controlled manner.
+
+Included in the sql directory is the SQL required to create the database, table and user in the remote
+database, if you are using MySQL.  Additionally there is a MySQL procedure which will manage partitioning
+the data into daily partitions.  You will need to set a scheduled event calling it with the retention
+policy which you require.
+
+Dependencies:
+1. collectd
+2. perl, compiled with threading and the following modules
+    - DBI
+    - DBD:mysql
+    - DBD:SQLite
+    - Data::UUID
+    - DateTime
+3. remote database
+
+
+CollectD configuration:
+
+collectd.conf:
+
+LoadPlugin Perl
+
+<Plugin perl>
+    IncludeDir "path to this dir"
+    LoadPlugin CachingDBStore
+    <Plugin CachingDBStore>
+        CacheTime 'time in seconds to cache in memory before flushing - defaults to 120'
+        RemoteDBHost "hostname or ip"
+        RemoteDBPort "port"
+        RemoteDBName "name of db"
+        RemoteDBUser "username"
+        RemoteDBPassword "password"
+        SQLiteDir "dir to write SQLite cache in - I would recommend not using /tmp"
+        CommitEvery 'commit every x inserts - defaults to 1000'
+        FlushSQLiteLimit 'stop adding to the write queue if we have retrieved this many from SQLite cache - defaults to 10,000'
+    </Plugin>
+</Plugin>
+
+
+Depending on collectd version you may need to edit /etc/init.d/collectd and add the line:
+
+export LD_PRELOAD=/usr/lib/libperl.so.5.10.1
