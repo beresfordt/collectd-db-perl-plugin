@@ -16,6 +16,7 @@ my $LocalTZ = DateTime::TimeZone->new( name => 'Europe/London' ) ;
 use Collectd qw( :all ) ;
 use DBI qw( :sql_types ) ;
 use Data::UUID ;
+use Try::Tiny ;
 
 plugin_register( TYPE_INIT, 'CachingDBStore', 'init' ) ;
 plugin_register( TYPE_CONFIG, 'CachingDBStore', 'config' ) ;
@@ -137,40 +138,47 @@ sub init{
     
     # Create the sqlite tables and indexes if they dont exist
     lock( $WriteQueue ) ;
+
     my $SQLiteDbh ;
-    eval{
+    my $sqliteConnectRv = try{
         $SQLiteDbh = DBI->connect(
             "dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db",
             "",
             "", 
             { RaiseError => 1, PrintError => 0, AutoCommit => 0 }
         ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to connect to SQLite DB file failed - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to connect to SQLite DB file failed - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $sqliteConnectRv ;
     
-    eval{
+
+    my $createTableRv = try{
         $SQLiteDbh->do( $createTable ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to create table failed - " . $@ ) ;
+        return 1 ;
+    }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to create table failed - " . $_ ) ;
         $SQLiteDbh->rollback ;
         return 0 ;
-    }
-    
+    } ;
+    return 0 unless $createTableRv ;
     $SQLiteDbh->commit ;
-    
-    eval{
+
+
+    my $createIndexRv = try{
         $SQLiteDbh->do( $createIndex ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to create index failed - " . $@ ) ;
+        return 1 ;
+    }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to create index failed - " . $_ ) ;
         $SQLiteDbh->rollback ;
         return 0 ;
-    }
-    
+    } ;
+    return 0 unless $createIndexRv ;
     $SQLiteDbh->commit ;
     
     # background a timer thread to periodically flush the in memory cache
@@ -197,7 +205,7 @@ sub write{
     my ( $type, $dataSet, $valueList ) = @_ ;
     
     my @items ;
-    
+
     # check that we have the same number of values as dataset (odd way of passing in the data tbh)
     if ( scalar ( @$dataSet ) != scalar ( @{ $valueList->{'values'} } ) ) {
         plugin_log( LOG_WARNING, "Size of dataset does not match size of value-list" ) ;
@@ -318,27 +326,33 @@ sub writeToRemoteDB{
     
     plugin_log( LOG_DEBUG, "writeToRemoteDB called" ) ;
     
-    eval{
+    my $connectRv = try{
         $dbh = DBI->connect('DBI:mysql:database=' . $configHash->{RemoteDBName} . 
                             ';host=' . $configHash->{RemoteDBHost} . 
                             ';port=' . $configHash->{RemoteDBPort}, 
                             $configHash->{RemoteDBUser}, 
                             $configHash->{RemoteDBPassword}, 
                             {RaiseError => 1, PrintError => 0, AutoCommit => 0}) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to connect to RemoteDB failed - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to connect to RemoteDB failed - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $connectRv ;
     
-    eval{
+
+    my $insertPrepareRv = try{
         $sth = $dbh->prepare( $insertIntoRemoteDB ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to prepare statement failed - " . $insertIntoRemoteDB . " - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
-    
+    catch{
+        plugin_log( LOG_ERR, "Attempt to prepare statement failed - " . $insertIntoRemoteDB . " - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $insertPrepareRv ;
+
+
     my $ug = new Data::UUID ;
     
     # enqueue and undef so loop exits
@@ -353,7 +367,7 @@ sub writeToRemoteDB{
         my $bin_uuid = $ug->from_string($QueueItem->{uuid}) ;
         
         # insert into RemoteDB - if we get DB error skip to next and re-queue failed insert item to CacheQueue
-        eval{
+        my $insertExecuteTry = try{
             $rv = $sth->execute(
                 $bin_uuid,
                 $date, 
@@ -366,14 +380,16 @@ sub writeToRemoteDB{
                 $QueueItem->{type_name}, 
                 $QueueItem->{type_instance}
             ) ;
-        } ;
-        if( $@ ){
-            plugin_log( LOG_ERR, "Attempt to insert failed - " . $@ ) ;
+            return 1 ;
+        }
+        catch{
+            plugin_log( LOG_ERR, "Attempt to insert failed - " . $_ ) ;
             $CacheLock->down ;
             $CacheQueue->enqueue( $QueueItem ) ;
             $CacheLock->up ;
             return 0 ;
-        }
+        } ;
+        next unless $insertExecuteTry ;
         
         # if insert failed re-queue item to CacheQueue and continue
         unless( $rv == 1 ){
@@ -405,26 +421,32 @@ sub writeToSQLite{
     plugin_log( LOG_DEBUG, "writeToSQLite called" ) ;
     
     my $SQLiteDbh ;
-    eval{
+    my $sqliteConnectRv = try{
         $SQLiteDbh = DBI->connect(
             "dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db",
             "",
             "", 
             {RaiseError => 1, PrintError => 0, AutoCommit => 0}
         ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to connect to SQLite DB file failed - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
-    
-    eval{
+    catch{
+        plugin_log( LOG_ERR, "Attempt to connect to SQLite DB file failed - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $sqliteConnectRv ;
+
+
+    my $sqlitePrepareRv = try{
         $sth = $SQLiteDbh->prepare( $insertIntoSQLite ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to prepare statement failed - " . $insertIntoSQLite . " - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to prepare statement failed - " . $insertIntoSQLite . " - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $sqlitePrepareRv ;
+    
     
     # enqueue an undef so loop exits
     $WriteQueue->enqueue( undef ) ;
@@ -434,7 +456,7 @@ sub writeToSQLite{
         
         # insert into SQLite - if we get DB error return failure and re-queue to CacheQueue
         # explicit binding so it doesn't have to work out data type
-        eval{
+        my $bindRv = try{
             $sth->bind_param( 1, $QueueItem->{uuid}, SQL_VARCHAR ) ; 
             $sth->bind_param( 2, $QueueItem->{timestamp}, SQL_BIGINT ) ; 
             $sth->bind_param( 3, $QueueItem->{measure}, SQL_BIGINT ) ; 
@@ -445,22 +467,28 @@ sub writeToSQLite{
             $sth->bind_param( 8, $QueueItem->{type}, SQL_VARCHAR ) ; 
             $sth->bind_param( 9, $QueueItem->{type_name}, SQL_VARCHAR ) ; 
             $sth->bind_param( 10, $QueueItem->{type_instance}, SQL_VARCHAR ) ;
-        } ;
-        if( $@ ){
-            plugin_log( LOG_ERR, "Failed attempt to bind values to prepared statement  - " . $insertIntoSQLite . " - " . $@ ) ;
-            return 0 ;
+            return 1 ;
         }
-        
-        eval{
-            $rv = $sth->execute ;
+        catch{
+            plugin_log( LOG_ERR, "Failed attempt to bind values to prepared statement  - " . $insertIntoSQLite . " - " . $_ ) ;
+            return 0 ;
         } ;
-        if( $@ ){
-            plugin_log( LOG_ERR, "Attempt to insert failed - " . $@ ) ;
+        return 0 unless $bindRv ;
+
+
+        my $executeRv = try{
+            $rv = $sth->execute ;
+            return 1 ;
+        }
+        catch{
+            plugin_log( LOG_ERR, "Attempt to insert failed - " . $_ ) ;
             $CacheLock->down ;
             $CacheQueue->enqueue( $QueueItem ) ;
             $CacheLock->up ;
-            next ;
-        }
+            return 0 ;
+        } ;
+        return 0 unless $executeRv ;
+
         
         # if insert failed re-queue item and continue
         unless( $rv == 1 ){
@@ -488,23 +516,24 @@ sub testRemoteDb{
     
     my $dbh ;
     
-    eval{
+    my $rv = try{
         $dbh = DBI->connect('DBI:mysql:database=' . $configHash->{RemoteDBName} . 
                             ';host=' . $configHash->{RemoteDBHost} . 
                             ';port=' . $configHash->{RemoteDBPort}, 
                             $configHash->{RemoteDBUser}, 
                             $configHash->{RemoteDBPassword},
-                            {RaiseError => 1}) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Connection attempt to RemoteDB failed - " . $@ ) ;
+                            {RaiseError => 1}
+        ) ;
+        plugin_log( LOG_DEBUG, "Connection RemoteDB connection test succeeded" ) ;
+        return 1 ;
+    }
+    catch{
+        plugin_log( LOG_ERR, "Connection attempt to RemoteDB failed - " . $_ ) ;
         return 0 ;
     }
-    else{
-        plugin_log( LOG_DEBUG, "Connection RemoteDB connection test succeeded" ) ;
-    }
+
     $dbh->disconnect ;
-    return 1 ;
+    return $rv ;
 }
 
 sub extractFromCacheQueue{
@@ -557,48 +586,66 @@ sub extractFromSQLite{
     lock( $WriteQueue ) ;
     
     my $SQLiteDbh ;
-    eval{
-        $SQLiteDbh = DBI->connect("dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db","","", 
+    my $sqliteConnectRv = try{
+        $SQLiteDbh = DBI->connect(
+            "dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db",
+            "",
+            "", 
             {RaiseError => 1, PrintError => 0, AutoCommit => 0}
         ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to connect to SQLite DB file failed - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
-    
-    eval{
+    catch{
+        plugin_log( LOG_ERR, "Attempt to connect to SQLite DB file failed - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $sqliteConnectRv ;
+ 
+
+    my $prepareExtractRv = try{
         $sth = $SQLiteDbh->prepare( $extractFromSQLite ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to prepare statement failed - " . $extractFromSQLite . " - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
-    
-    eval{
+    catch{
+        plugin_log( LOG_ERR, "Attempt to prepare select statement failed - " . $extractFromSQLite . " - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $prepareExtractRv ;
+
+
+    my $prepareDeleteRv = try{
         $dh = $SQLiteDbh->prepare( $deleteFromSQLite ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to prepare statement failed - " . $deleteFromSQLite . " - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to prepare delete statement failed - " . $deleteFromSQLite . " - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $prepareDeleteRv ;
     
+
     # sqlite assumes any value is text, so we need to explicitly bind
-    eval{
+    my $bindQueryRv = try{
         $sth->bind_param( 1, $timestamp, SQL_BIGINT ) ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Failed attempt to bind value $timestamp to prepared statement  - " . $deleteFromSQLite . " - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
+    catch{
+        plugin_log( LOG_ERR, "Failed attempt to bind value $timestamp to prepared statement  - " . $deleteFromSQLite . " - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $bindQueryRv ;
     
-    eval{
+
+    my $selectExecuteRv = try{
         $sth->execute ;
-    } ;
-    if( $@ ){
-        plugin_log( LOG_ERR, "Attempt to execute statement with param $timestamp failed - " . $extractFromSQLite . " - " . $@ ) ;
-        return 0 ;
+        return 1 ;
     }
+    catch{
+        plugin_log( LOG_ERR, "Attempt to execute statement with param $timestamp failed - " . $extractFromSQLite . " - " . $_ ) ;
+        return 0 ;
+    } ;
+    return 0 unless $selectExecuteRv ;
+
     
     plugin_log( LOG_DEBUG, "extractFromSQLite statements prepared and bound" ) ;
     
@@ -611,14 +658,16 @@ sub extractFromSQLite{
     while( my $tuple = $sth->fetchrow_hashref() ){
         $WriteQueue->enqueue( $tuple ) ;
         my $rv ;
-        eval{
+        my $dhExecuteRv = try{
             $rv = $dh->execute( $tuple->{uuid} ) ;
-        } ;
-        if( $@ ){
-            plugin_log( LOG_ERR, "Attempt to delete value from SQLite failed - " . $@ ) ;
-            my $junk = $WriteQueue->extract( -1 ) ;
-            next ;
+            return 1 ;
         }
+        catch{
+            plugin_log( LOG_ERR, "Attempt to delete value from SQLite failed - " . $_ ) ;
+            my $junk = $WriteQueue->extract( -1 ) ;
+            return 0 ;
+        } ;
+        next unless $dhExecuteRv ;
         
         unless( $rv == 1 ){
             my $junk = $WriteQueue->extract( -1 ) ;
@@ -626,9 +675,14 @@ sub extractFromSQLite{
         }
         $i++ ;
         
-        if( $i % $configHash->{CommitEvery} == 0 ){
-            $SQLiteDbh->commit ;
-        }
+        # Can't commit here as older version of sqlite driver does not support
+        # commits on one statement handle while another is still running
+        # try having separate database handles for query and delete, though
+        # probably wont work due to sqlites table locking
+        #
+        # if( $i % $configHash->{CommitEvery} == 0 ){
+        #    $SQLiteDbh->commit ;
+        #}
         
         # If remote db outage lasted for ages there could be a lot of cached data in sqlite
         # so we use excessive amounts of ram I am limiting the number of messages which are
@@ -693,3 +747,4 @@ sub cacheTimer{
 }
 
 return 1;
+
