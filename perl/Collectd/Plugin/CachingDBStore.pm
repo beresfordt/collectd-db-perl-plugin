@@ -11,7 +11,7 @@ use Thread::Queue ;
 use DateTime ;
 use DateTime::TimeZone ;
 # Should probably set this by config
-my $LocalTZ = DateTime::TimeZone->new( name => 'Europe/London' );
+my $LocalTZ = DateTime::TimeZone->new( name => 'Europe/London' ) ;
 
 use Collectd qw( :all ) ;
 use DBI qw( :sql_types ) ;
@@ -24,8 +24,20 @@ plugin_register( TYPE_FLUSH, 'CachingDBStore', 'flush' ) ;
 plugin_register( TYPE_SHUTDOWN, 'CachingDBStore', 'shutdown' ) ;
 
 my $configHash = {} ;
-my @reqItem = ( 'RemoteDBHost', 'RemoteDBPort' ,'RemoteDBName', 'RemoteDBUser', 'RemoteDBPassword', 'SQLiteDir' ) ;
-my $dataTypeLU = { 0 => 'DS_TYPE_COUNTER', 1 => 'DS_TYPE_GAUGE', 2 => 'DS_TYPE_DERIVE', 3 => 'DS_TYPE_ABSOLUTE', };
+my @reqItem = ( 
+    'RemoteDBHost',
+    'RemoteDBPort',
+    'RemoteDBName',
+    'RemoteDBUser',
+    'RemoteDBPassword',
+    'SQLiteDir'
+) ;
+my $dataTypeLU = {
+    0 => 'DS_TYPE_COUNTER',
+    1 => 'DS_TYPE_GAUGE',
+    2 => 'DS_TYPE_DERIVE',
+    3 => 'DS_TYPE_ABSOLUTE', 
+};
 
 # max unix TS val is 2147483647 - using largest integer val which can be stored with that many digets for flush all conditions
 my $massiveTSVal = '9999999999' ;
@@ -44,16 +56,36 @@ my $createTable = 'create table if not exists collectdData(
     type_instance TEXT
 )' ;
 my $createIndex = 'create index if not exists ts_idx on collectdData ( timestamp )' ;
-my $insertIntoSQLite = 'insert into collectdData( 
-    uuid, timestamp, measure, hostname, ds_type, plugin, plugin_instance, type, type_name, type_instance ) 
-    values(?,?,?,?,?,?,?,?,?,?)' ;
+my $insertIntoSQLite = 
+'insert into collectdData(
+    uuid, 
+    timestamp,
+    measure,
+    hostname,
+    ds_type,
+    plugin,
+    plugin_instance,
+    type,
+    type_name,
+    type_instance ) 
+values(?,?,?,?,?,?,?,?,?,?)' ;
 my $extractFromSQLite = 'select * from collectdData where timestamp < ?' ;
 my $deleteFromSQLite = 'delete from collectdData where uuid = ?' ;
 
 # RemoteDB
-my $insertIntoRemoteDB = 'insert into metrics_database.collectdData( 
-    uuid_bin, event_timestamp, measure, hostname, ds_type, plugin, plugin_instance, type, type_name, type_instance ) 
-    values(?,?,?,?,?,?,?,?,?,?)' ;
+my $insertIntoRemoteDB = 
+'insert into metrics_database.collectdData( 
+    uuid_bin,
+    event_timestamp,
+    measure,
+    hostname,
+    ds_type,
+    plugin,
+    plugin_instance,
+    type,
+    type_name,
+    type_instance ) 
+values(?,?,?,?,?,?,?,?,?,?)' ;
 
 # Separate queues for cache and writing so cache loading can be performed concurrently with writing
 my $CacheQueue = Thread::Queue->new() ;
@@ -107,7 +139,10 @@ sub init{
     lock( $WriteQueue ) ;
     my $SQLiteDbh ;
     eval{
-        $SQLiteDbh = DBI->connect("dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db", "", "", 
+        $SQLiteDbh = DBI->connect(
+            "dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db",
+            "",
+            "", 
             { RaiseError => 1, PrintError => 0, AutoCommit => 0 }
         ) ;
     } ;
@@ -371,7 +406,10 @@ sub writeToSQLite{
     
     my $SQLiteDbh ;
     eval{
-        $SQLiteDbh = DBI->connect("dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db", "", "", 
+        $SQLiteDbh = DBI->connect(
+            "dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db",
+            "",
+            "", 
             {RaiseError => 1, PrintError => 0, AutoCommit => 0}
         ) ;
     } ;
