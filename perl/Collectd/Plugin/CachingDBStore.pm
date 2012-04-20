@@ -1,10 +1,11 @@
 package Collectd::Plugin::CachingDBStore ;
+
 use strict ;
 use warnings ;
 
 use threads ;
 use threads::shared ;
-use Thread::Semaphore ;
+use Thread::Semaphore 2.12 ;
 use Thread::Queue ;
 use DateTime ;
 
