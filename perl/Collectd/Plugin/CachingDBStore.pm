@@ -7,7 +7,11 @@ use threads ;
 use threads::shared ;
 use Thread::Semaphore 2.12 ;
 use Thread::Queue ;
+
 use DateTime ;
+use DateTime::TimeZone ;
+# Should probably set this by config
+my $LocalTZ = DateTime::TimeZone->new( name => 'Europe/London' );
 
 use Collectd qw( :all ) ;
 use DBI qw( :sql_types ) ;
@@ -309,7 +313,7 @@ sub writeToRemoteDB{
         
         my $rv ;
 
-        my $dt = DateTime->from_epoch( epoch => $QueueItem->{timestamp} ) ;
+        my $dt = DateTime->from_epoch( epoch => $QueueItem->{timestamp}, time_zone => $LocalTZ ) ;
         my $date = $dt->ymd . " " . $dt->hms ;
         my $bin_uuid = $ug->from_string($QueueItem->{uuid}) ;
         
