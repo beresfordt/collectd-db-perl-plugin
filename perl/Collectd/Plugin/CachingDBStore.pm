@@ -40,9 +40,6 @@ my $dataTypeLU = {
     3 => 'DS_TYPE_ABSOLUTE', 
 };
 
-# max unix TS val is 2147483647 - using largest integer val which can be stored with that many digets for flush all conditions
-my $massiveTSVal = '9999999999' ;
-
 # SQLite
 my $createTable = 'create table if not exists collectdData( 
     uuid TEXT PRIMARY KEY, 
@@ -70,7 +67,7 @@ my $insertIntoSQLite =
     type_name,
     type_instance ) 
 values(?,?,?,?,?,?,?,?,?,?)' ;
-my $extractFromSQLite = 'select * from collectdData where timestamp < ?' ;
+my $extractFromSQLite = 'select * from collectdData' ;
 my $deleteFromSQLite = 'delete from collectdData where uuid = ?' ;
 
 # RemoteDB
@@ -154,7 +151,7 @@ sub init{
         return 0 ;
     } ;
     return 0 unless $sqliteConnectRv ;
-    
+
 
     my $createTableRv = try{
         $SQLiteDbh->do( $createTable ) ;
@@ -256,47 +253,32 @@ sub write{
 
 sub flush{
 
-    # flush is a user initiated ( ie not automagic collectd triggered ) call
-
-    my( $timeout, $identifier ) = @_ ;
-    
-    plugin_log( LOG_DEBUG, "Flush called with @_" ) ;
+    plugin_log( LOG_DEBUG, "Flush called" ) ;
     
     # Identifier based flushing not yet implemented
+    # TS based flushing too slow with the volumes of data I'm handling
+    # maybe try again when I've re-written in c
     
     # WriteQueue first so we're not interfering with 
     # any in-progress writes to local or remote DB
     lock( $WriteQueue ) ;
-    $CacheLock->down() ;
     
     # Empty temp queue
-    if($TempQueue->pending()){
+    if( $TempQueue->pending() ){
         $TempQueue->enqueue( undef ) ;
         while( my $item = $TempQueue->dequeue() ){
             $CacheQueue->enqueue( $item ) ;
         }
     }
 
-    if( $timeout <= 0 ){
-        $CacheQueue->enqueue( undef ) ;
-        while( my $item = $CacheQueue->dequeue() ){
-            $WriteQueue->enqueue( $item ) ;
-        }
-    }
-    else{
-        extractFromCacheQueue( $timeout ) ;
+    $CacheQueue->enqueue( undef ) ;
+    while( my $item = $CacheQueue->dequeue() ){
+        $WriteQueue->enqueue( $item ) ;
     }
     
-    $CacheLock->up() ;
-    
-    # Now do same for anything cached in SQLite if we have connectivity to remote DB
+    # Now extract items cached in SQLite if we have connectivity to remote DB
     if( testRemoteDb() ){
-        if( $timeout <= 0 ){
-            extractFromSQLite( $massiveTSVal ) ;
-        }
-        else{
-            extractFromSQLite( $timeout ) ;
-        }
+        extractFromSQLite() ;
     }
     
     # write to RemoteDB if available
@@ -363,7 +345,7 @@ sub writeToRemoteDB{
         my $dt = DateTime->from_epoch( epoch => $QueueItem->{timestamp}, time_zone => $LocalTZ ) ;
         my $date = $dt->ymd . " " . $dt->hms ;
         my $bin_uuid = $ug->from_string($QueueItem->{uuid}) ;
-        
+
         # insert into RemoteDB - if we get DB error skip to next and re-queue failed insert item to CacheQueue
         my $insertExecuteTry = try{
             $rv = $sth->execute(
@@ -388,7 +370,7 @@ sub writeToRemoteDB{
             return 0 ;
         } ;
         next unless $insertExecuteTry ;
-        
+
         # if insert failed re-queue item to CacheQueue and continue
         unless( $rv == 1 ){
             $CacheLock->down ;
@@ -413,9 +395,9 @@ sub writeToRemoteDB{
 sub writeToSQLite{
     
     my $sth ;
-    
+
     plugin_log( LOG_DEBUG, "writeToSQLite called" ) ;
-    
+
     my $SQLiteDbh ;
     my $sqliteConnectRv = try{
         $SQLiteDbh = DBI->connect(
@@ -485,7 +467,7 @@ sub writeToSQLite{
         } ;
         return 0 unless $executeRv ;
 
-        
+
         # if insert failed re-queue item and continue
         unless( $rv == 1 ){
             $CacheLock->down ;
@@ -532,50 +514,12 @@ sub testRemoteDb{
     return $rv ;
 }
 
-sub extractFromCacheQueue{
-    
-    my $timeStamp = shift ;
-    
-    plugin_log( LOG_DEBUG, "extractFromCacheQueue called with $timeStamp" ) ;
-    
-    my $CacheDepth = $CacheQueue->pending() ;
-    my @toExtract ;
-    
-    # Peek at each item in the queue - look but dont alter queue
-    # If it has a timestamp which needs flushing remember it's index
-    for ( my $i = 0 ; $i< $CacheDepth ; $i++ ){
-        my $item = $CacheQueue->peek( $i ) ;
-        if( $item->{timestamp} <= $timeStamp ){
-            push( @toExtract, $i ) ;
-        }
-    }
-    
-    # Go through the array of indexes which need extracting
-    # and get those items from the queue
-    # for each item we remove all subsequent items in the queue
-    # have their index decreased by 1, so adjust the index 
-    # returned by the array accordingly
-    my $count = scalar( @toExtract ) ;
-    for( my $i = 0 ; $i < $count ; $i++ ){
-        my $idx = $toExtract[$i] - $i ;
-        my $data = $CacheQueue->extract( $idx ) ;
-        $WriteQueue->enqueue( $data ) ;
-    }
-    
-    plugin_log( LOG_DEBUG, "Enqueued $count items from CacheQueue to WriteQueue" ) ;
-    
-    return 1 ;
-}
-
 sub extractFromSQLite{
     
-    # load all before timestamp x into writeQueue
     # only load maximum of $configHash->{FlushSQLiteLimit} ( defaults to 10,000 )
-    
-    my $timestamp = shift ;
-    
-    plugin_log( LOG_DEBUG, "extractFromSQLite called with $timestamp" ) ;
-    
+
+    plugin_log( LOG_DEBUG, "extractFromSQLite called" ) ;
+
     my $sth ;
     my $dh ;
     my $SQLiteDbh ;
@@ -594,7 +538,7 @@ sub extractFromSQLite{
         return 0 ;
     } ;
     return 0 unless $sqliteConnectRv ;
- 
+
 
     my $prepareExtractRv = try{
         $sth = $SQLiteDbh->prepare( $extractFromSQLite ) ;
@@ -616,31 +560,19 @@ sub extractFromSQLite{
         return 0 ;
     } ;
     return 0 unless $prepareDeleteRv ;
-    
 
-    # sqlite assumes any value is text, so we need to explicitly bind
-    my $bindQueryRv = try{
-        $sth->bind_param( 1, $timestamp, SQL_BIGINT ) ;
-        return 1 ;
-    }
-    catch{
-        plugin_log( LOG_ERR, "Failed attempt to bind value $timestamp to prepared statement  - " . $deleteFromSQLite . " - " . $_ ) ;
-        return 0 ;
-    } ;
-    return 0 unless $bindQueryRv ;
-    
 
     my $selectExecuteRv = try{
         $sth->execute ;
         return 1 ;
     }
     catch{
-        plugin_log( LOG_ERR, "Attempt to execute statement with param $timestamp failed - " . $extractFromSQLite . " - " . $_ ) ;
+        plugin_log( LOG_ERR, "Attempt to execute select statement failed - " . $extractFromSQLite . " - " . $_ ) ;
         return 0 ;
     } ;
     return 0 unless $selectExecuteRv ;
 
-    
+
     plugin_log( LOG_DEBUG, "extractFromSQLite statements prepared and bound" ) ;
     
     # for each matching row Enqueue to WriteQueue
@@ -662,7 +594,7 @@ sub extractFromSQLite{
             return 0 ;
         } ;
         next unless $dhExecuteRv ;
-        
+
         unless( $rv == 1 ){
             my $junk = $WriteQueue->extract( -1 ) ;
             next ;
