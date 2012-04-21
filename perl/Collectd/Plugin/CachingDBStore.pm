@@ -322,8 +322,6 @@ sub writeToRemoteDB{
     my $dbh ;
     my $sth ;
     
-    lock( $WriteQueue ) ;
-    
     plugin_log( LOG_DEBUG, "writeToRemoteDB called" ) ;
     
     my $connectRv = try{
@@ -415,8 +413,6 @@ sub writeToRemoteDB{
 sub writeToSQLite{
     
     my $sth ;
-    
-    lock( $WriteQueue ) ;
     
     plugin_log( LOG_DEBUG, "writeToSQLite called" ) ;
     
@@ -582,10 +578,8 @@ sub extractFromSQLite{
     
     my $sth ;
     my $dh ;
-    
-    lock( $WriteQueue ) ;
-    
     my $SQLiteDbh ;
+
     my $sqliteConnectRv = try{
         $SQLiteDbh = DBI->connect(
             "dbi:SQLite:dbname=" . $configHash->{SQLiteDir} . "/CachingDBStore.db",
