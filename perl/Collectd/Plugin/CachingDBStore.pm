@@ -281,7 +281,8 @@ sub flush{
         extractFromSQLite() ;
     }
     
-    # write to RemoteDB if available
+    # write to RemoteDB if available - separate test in case reote db connectivity
+    # was lost while extracting from sqlite
     if( testRemoteDb() ){
         writeToRemoteDB() ;
         # if any items remain in the writeQueue bung em into the SQLite store - shouldn't happen
@@ -383,6 +384,11 @@ sub writeToRemoteDB{
         
         if( $i % $configHash->{CommitEvery} == 0 ){
             $dbh->commit ;
+        }
+
+        if( $i >= $configHash->{FlushSQLiteLimit} ){
+            plugin_log( LOG_WARNING, "Stopping writes to remote DB early - $i items written this run" ) ;
+            last ;
         }
     }
     
@@ -503,14 +509,14 @@ sub testRemoteDb{
                             {RaiseError => 1}
         ) ;
         plugin_log( LOG_DEBUG, "Connection RemoteDB connection test succeeded" ) ;
+        $dbh->disconnect ;
         return 1 ;
     }
     catch{
         plugin_log( LOG_ERR, "Connection attempt to RemoteDB failed - " . $_ ) ;
         return 0 ;
-    }
+    } ;
 
-    $dbh->disconnect ;
     return $rv ;
 }
 
